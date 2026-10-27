@@ -1,5 +1,3 @@
-from collections.abc import Callable
-
 import astropy.units as u  # type: ignore[import-untyped]
 import numpy as np
 import pytest
@@ -532,55 +530,81 @@ class TestSolarSystemConstraintSeparation:
 
 
 class TestSolarSystemConstraintMatchesAstropy:
-    """
-    Test that the values computed by SolarSystemConstraint match those
-    computed directly with astropy from the ephemeris body positions.
-    """
+    """Test suite comparing SolarSystemConstraint values with astropy calculations."""
 
-    @pytest.mark.parametrize(
-        "body, magnitude_formula",
-        [
-            (SolarSystemObject.MERCURY, lambda phase: -1.9 + 0.02 * phase + 3.5e-7 * phase**3),
-            (SolarSystemObject.VENUS, lambda phase: -4.7 + 0.013 * phase + 4.3e-7 * phase**3),
-        ],
-    )
-    @pytest.mark.parametrize("ephemeris_fixture", ["ground_ephemeris", "test_tle_ephemeris"])
-    def test_phase_angle_magnitude_matches_full_separation(
-        self,
-        request: pytest.FixtureRequest,
-        ephemeris_fixture: str,
-        body: SolarSystemObject,
-        magnitude_formula: Callable[[np.typing.NDArray[np.float64]], np.typing.NDArray[np.float64]],
+    def test_calculate_magnitude_mercury_matches_full_separation_ground(
+        self, ground_ephemeris: Ephemeris, solar_system_constraint: SolarSystemConstraint
     ) -> None:
-        """
-        The magnitude should match one computed from astropy's full separation
-        between the body and Sun GCRS coordinates.
-        """
-        ephemeris: Ephemeris = request.getfixturevalue(ephemeris_fixture)
-        constraint = SolarSystemConstraint(bodies=[body])
-        i = slice(0, len(ephemeris.timestamp))
-        body_coord = ephemeris.get_body(body)
+        """Test that Mercury's ground magnitude matches one using astropy's full GCRS separation."""
+        mercury = ground_ephemeris.get_body(SolarSystemObject.MERCURY)
+        result = solar_system_constraint._calculate_body_magnitude(
+            SolarSystemObject.MERCURY, mercury, ground_ephemeris, slice(0, len(ground_ephemeris.timestamp))
+        )
+        phase_angle = mercury.separation(ground_ephemeris.sun).deg
+        expected = -1.9 + 0.02 * phase_angle + 3.5e-7 * phase_angle**3
+        assert np.allclose(result, expected, rtol=0, atol=1e-9)
 
-        magnitude = constraint._calculate_body_magnitude(body, body_coord, ephemeris, i)
+    def test_calculate_magnitude_mercury_matches_full_separation_tle(
+        self, test_tle_ephemeris: Ephemeris, solar_system_constraint: SolarSystemConstraint
+    ) -> None:
+        """Test that Mercury's TLE magnitude matches one using astropy's full GCRS separation."""
+        mercury = test_tle_ephemeris.get_body(SolarSystemObject.MERCURY)
+        result = solar_system_constraint._calculate_body_magnitude(
+            SolarSystemObject.MERCURY,
+            mercury,
+            test_tle_ephemeris,
+            slice(0, len(test_tle_ephemeris.timestamp)),
+        )
+        phase_angle = mercury.separation(test_tle_ephemeris.sun).deg
+        expected = -1.9 + 0.02 * phase_angle + 3.5e-7 * phase_angle**3
+        assert np.allclose(result, expected, rtol=0, atol=1e-9)
 
-        expected = magnitude_formula(body_coord.separation(ephemeris.sun).deg)
-        assert np.allclose(magnitude, expected, rtol=0, atol=1e-9)
+    def test_calculate_magnitude_venus_matches_full_separation_ground(
+        self, ground_ephemeris: Ephemeris, solar_system_constraint: SolarSystemConstraint
+    ) -> None:
+        """Test that Venus's ground magnitude matches one using astropy's full GCRS separation."""
+        venus = ground_ephemeris.get_body(SolarSystemObject.VENUS)
+        result = solar_system_constraint._calculate_body_magnitude(
+            SolarSystemObject.VENUS, venus, ground_ephemeris, slice(0, len(ground_ephemeris.timestamp))
+        )
+        phase_angle = venus.separation(ground_ephemeris.sun).deg
+        expected = -4.7 + 0.013 * phase_angle + 4.3e-7 * phase_angle**3
+        assert np.allclose(result, expected, rtol=0, atol=1e-9)
+
+    def test_calculate_magnitude_venus_matches_full_separation_tle(
+        self, test_tle_ephemeris: Ephemeris, solar_system_constraint: SolarSystemConstraint
+    ) -> None:
+        """Test that Venus's TLE magnitude matches one using astropy's full GCRS separation."""
+        venus = test_tle_ephemeris.get_body(SolarSystemObject.VENUS)
+        result = solar_system_constraint._calculate_body_magnitude(
+            SolarSystemObject.VENUS, venus, test_tle_ephemeris, slice(0, len(test_tle_ephemeris.timestamp))
+        )
+        phase_angle = venus.separation(test_tle_ephemeris.sun).deg
+        expected = -4.7 + 0.013 * phase_angle + 4.3e-7 * phase_angle**3
+        assert np.allclose(result, expected, rtol=0, atol=1e-9)
 
     @pytest.mark.parametrize("body", list(SolarSystemObject))
-    @pytest.mark.parametrize("ephemeris_fixture", ["ground_ephemeris", "test_tle_ephemeris"])
-    def test_body_separation_matches_ephemeris_body(
-        self,
-        request: pytest.FixtureRequest,
-        ephemeris_fixture: str,
-        body: SolarSystemObject,
-        sky_coord: SkyCoord,
+    def test_body_separation_matches_ephemeris_body_ground(
+        self, body: SolarSystemObject, ground_ephemeris: Ephemeris, sky_coord: SkyCoord
     ) -> None:
-        """The recorded separation should match the separation from the ephemeris body position."""
-        ephemeris: Ephemeris = request.getfixturevalue(ephemeris_fixture)
+        """Test that the recorded ground separation matches the separation from the ephemeris body."""
         constraint = SolarSystemConstraint(bodies=[body])
-        constraint(ephemeris.timestamp, ephemeris, sky_coord)
+        constraint(ground_ephemeris.timestamp, ground_ephemeris, sky_coord)
 
-        body_coord = ephemeris.get_body(body)
+        body_coord = ground_ephemeris.get_body(body)
+        expected = SkyCoord(body_coord.ra, body_coord.dec).separation(sky_coord)
+        assert constraint.computed_values.body_separation is not None
+        assert u.allclose(constraint.computed_values.body_separation[body], expected, atol=1e-9 * u.deg)
+
+    @pytest.mark.parametrize("body", list(SolarSystemObject))
+    def test_body_separation_matches_ephemeris_body_tle(
+        self, body: SolarSystemObject, test_tle_ephemeris: Ephemeris, sky_coord: SkyCoord
+    ) -> None:
+        """Test that the recorded TLE separation matches the separation from the ephemeris body."""
+        constraint = SolarSystemConstraint(bodies=[body])
+        constraint(test_tle_ephemeris.timestamp, test_tle_ephemeris, sky_coord)
+
+        body_coord = test_tle_ephemeris.get_body(body)
         expected = SkyCoord(body_coord.ra, body_coord.dec).separation(sky_coord)
         assert constraint.computed_values.body_separation is not None
         assert u.allclose(constraint.computed_values.body_separation[body], expected, atol=1e-9 * u.deg)
