@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import astropy.units as u  # type: ignore[import-untyped]
 import numpy as np
+import rust_ephem
 from astropy.constants import R_earth, R_sun  # type: ignore[import-untyped]
 from astropy.coordinates import (  # type: ignore[import-untyped]
     Angle,
@@ -14,8 +15,37 @@ from astropy.coordinates import (  # type: ignore[import-untyped]
 )
 from astropy.time import Time, TimeDelta  # type: ignore[import-untyped]
 
+from ..core.enums import SolarSystemObject
+
 # Define the radii of the Moon (as astropy doesn't)
 R_moon = 1737.4 * u.km
+
+
+def _rust_ephem_body_name(body_name: SolarSystemObject | str) -> str:
+    """
+    Return the name to use when requesting a Solar System body from rust-ephem.
+
+    The planetary ephemeris kernel shipped with rust-ephem (de440s) only
+    contains records for the planetary barycenters, so planets are requested as
+    e.g. "mars barycenter". The Earth is the exception: "earth barycenter" is
+    the Earth-Moon barycenter, which sits ~4700 km from the geocenter, an error
+    of tens of degrees as seen from low Earth orbit, so the geocenter is
+    requested instead.
+
+    Parameters
+    ----------
+    body_name : SolarSystemObject | str
+        Name of the body ('earth', 'mars', etc.)
+
+    Returns
+    -------
+    str
+        The body name to pass to `rust_ephem.Ephemeris.get_body`.
+    """
+    name = body_name.value if isinstance(body_name, SolarSystemObject) else body_name
+    if name == SolarSystemObject.EARTH:
+        return name
+    return f"{name} barycenter"
 
 
 class Ephemeris(ABC):
@@ -99,6 +129,9 @@ class Ephemeris(ABC):
     distance: u.Quantity
     _start_unix: float
     _step_seconds: float
+    # rust-ephem ephemeris, set by subclasses that compute their data with rust-ephem
+    _rust_ephem: rust_ephem.Ephemeris | None = None
+    _body_cache: dict[str, SkyCoord]
 
     def __init__(
         self,
@@ -131,6 +164,9 @@ class Ephemeris(ABC):
 
         # Compute range of timestamps
         self.timestamp = self._compute_timestamp()
+
+        # Cache of Solar System body positions, keyed by body name
+        self._body_cache = {}
 
     def __len__(self) -> int:
         return len(self.timestamp)
@@ -174,14 +210,33 @@ class Ephemeris(ABC):
         Calculate ephemeris data based on the coordinates computed by
         prepare_data().
         """
-        # Calculate the position of the Moon relative to the spacecraft
-        self.moon = get_body("moon", self.timestamp, location=self.earth_location)
+        if self._rust_ephem is not None:
+            # rust-ephem has already computed the angular radii of the Sun,
+            # Moon and Earth, as seen from the observatory. The Sun, Moon and
+            # Earth are requested as apparent positions (light time,
+            # deflection and aberration applied), to match astropy's get_body.
+            self.moon = self._rust_ephem.get_body("moon", apparent=True)
+            self.sun = self._rust_ephem.get_body("sun", apparent=True)
+            self.earth = self.get_body(SolarSystemObject.EARTH)
+            self.earth_radius_angle = self._rust_ephem.earth_radius
+            self.moon_radius_angle = self._rust_ephem.moon_radius
+            self.sun_radius_angle = self._rust_ephem.sun_radius
+        else:
+            # Calculate the position of the Moon relative to the spacecraft
+            self.moon = get_body("moon", self.timestamp, location=self.earth_location)
 
-        # Calculate the position of the Sun relative to the spacecraft
-        self.sun = get_body("sun", self.timestamp, location=self.earth_location)
+            # Calculate the position of the Sun relative to the spacecraft
+            self.sun = get_body("sun", self.timestamp, location=self.earth_location)
 
-        # Calculate the position of the Earth relative to the spacecraft
-        self.earth = get_body("earth", self.timestamp, location=self.earth_location)
+            # Calculate the position of the Earth relative to the spacecraft
+            self.earth = get_body("earth", self.timestamp, location=self.earth_location)
+
+            # Calculate Earth's angular radius from observatory, capped at 90 degrees
+            self.earth_radius_angle = np.arcsin(np.minimum(R_earth / self.gcrs.distance, 1))
+
+            # Similarly calculate the angular radii of the Sun and the Moon, capped at 90 degrees
+            self.moon_radius_angle = np.arcsin(np.minimum(R_moon / self.moon.distance, 1))
+            self.sun_radius_angle = np.arcsin(np.minimum(R_sun / self.sun.distance, 1))
 
         # Get the longitude, latitude, height, and distance (from center of
         # Earth) of the satellite from the EarthLocation object.
@@ -190,12 +245,30 @@ class Ephemeris(ABC):
         self.height = self.earth_location.height
         self.distance = self.gcrs.distance
 
-        # Calculate Earth's angular radius from observatory, capped at 90 degrees
-        self.earth_radius_angle = np.arcsin(np.minimum(R_earth / self.distance, 1))
+    def get_body(self, body_name: SolarSystemObject | str) -> SkyCoord:
+        """
+        Return the apparent position of a Solar System body as seen from the
+        observatory, for every timestamp in the ephemeris. Results are cached,
+        so repeated calls (e.g. when evaluating constraints for many targets)
+        are free.
 
-        # Similarly calculate the angular radii of the Sun and the Moon, capped at 90 degrees
-        self.moon_radius_angle = np.arcsin(np.minimum(R_moon / self.moon.distance, 1))
-        self.sun_radius_angle = np.arcsin(np.minimum(R_sun / self.sun.distance, 1))
+        Parameters
+        ----------
+        body_name : SolarSystemObject | str
+            Name of the body ('mars', 'jupiter', etc.)
+
+        Returns
+        -------
+        SkyCoord
+            Position of the body at each timestamp.
+        """
+        name = body_name.value if isinstance(body_name, SolarSystemObject) else body_name
+        if name not in self._body_cache:
+            if self._rust_ephem is not None:
+                self._body_cache[name] = self._rust_ephem.get_body(_rust_ephem_body_name(name), apparent=True)
+            else:
+                self._body_cache[name] = get_body(name, self.timestamp, location=self.earth_location)
+        return self._body_cache[name]
 
     @abstractmethod
     def prepare_data(self) -> None:

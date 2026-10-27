@@ -14,9 +14,9 @@ def mock_get_bright_stars(
     mock_bright_stars: list[tuple[SkyCoord, float]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[MagicMock, None, None]:
-    """Patch get_bright_stars to prevent internet access during tests."""
-    mock = MagicMock(return_value=mock_bright_stars)
-    monkeypatch.setattr("across.tools.visibility.constraints.bright_star.get_bright_stars", mock)
+    """Patch get_bright_star_coordinates to prevent internet access during tests."""
+    mock = MagicMock(return_value=SkyCoord([star for star, _ in mock_bright_stars]))
+    monkeypatch.setattr("across.tools.visibility.constraints.bright_star.get_bright_star_coordinates", mock)
     yield mock
 
 

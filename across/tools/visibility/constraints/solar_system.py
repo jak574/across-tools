@@ -4,40 +4,13 @@ from typing import Any, Literal
 import astropy.units as u  # type: ignore[import-untyped]
 import numpy as np
 import numpy.typing as npt
-from astropy.coordinates import SkyCoord, get_body  # type: ignore[import-untyped]
+from astropy.coordinates import SkyCoord  # type: ignore[import-untyped]
 from astropy.time import Time  # type: ignore[import-untyped]
 from pydantic import Field, field_validator
 
 from ...core.enums import ConstraintType, SolarSystemObject
 from ...ephemeris import Ephemeris
 from .base import ConstraintABC, get_slice
-
-
-def _rust_ephem_body_name(body_name: SolarSystemObject | str) -> str:
-    """
-    Return the name to use when requesting a Solar System body from rust-ephem.
-
-    The planetary ephemeris kernel shipped with rust-ephem (de440s) only
-    contains records for the planetary barycenters, so planets are requested as
-    e.g. "mars barycenter". The Earth is the exception: "earth barycenter" is
-    the Earth-Moon barycenter, which sits ~4700 km from the geocenter, an error
-    of tens of degrees as seen from low Earth orbit, so the geocenter is
-    requested instead.
-
-    Parameters
-    ----------
-    body_name : SolarSystemObject | str
-        Name of the body ('earth', 'mars', etc.)
-
-    Returns
-    -------
-    str
-        The body name to pass to `rust_ephem.TLEEphemeris.get_body`.
-    """
-    name = body_name.value if isinstance(body_name, SolarSystemObject) else body_name
-    if name == SolarSystemObject.EARTH:
-        return name
-    return f"{name} barycenter"
 
 
 class SolarSystemConstraint(ConstraintABC):
@@ -123,8 +96,14 @@ class SolarSystemConstraint(ConstraintABC):
         if body_name == SolarSystemObject.MERCURY:
             # Mercury magnitude calculation
             # Simplified Mercury magnitude formula
-            # Maximum brightness around -1.9
-            phase_angle: npt.NDArray[np.float64] = body_coord.separation(ephemeris.sun[i]).deg
+            # Maximum brightness around -1.9. Note that creating the SkyCoords
+            # here from ra/dec avoids a very slow comparison of the two GCRS
+            # frames inside astropy's separation.
+            phase_angle: npt.NDArray[np.float64] = (
+                SkyCoord(body_coord.ra, body_coord.dec)
+                .separation(SkyCoord(ephemeris.sun[i].ra, ephemeris.sun[i].dec))
+                .deg
+            )
             magnitude: npt.NDArray[np.float64] = -1.9 + 0.02 * phase_angle + 3.5e-7 * phase_angle**3
             return magnitude
 
@@ -132,7 +111,11 @@ class SolarSystemConstraint(ConstraintABC):
             # Venus magnitude calculation
             # Simplified Venus magnitude formula
             # Maximum brightness around -4.7
-            phase_angle = body_coord.separation(ephemeris.sun[i]).deg
+            phase_angle = (
+                SkyCoord(body_coord.ra, body_coord.dec)
+                .separation(SkyCoord(ephemeris.sun[i].ra, ephemeris.sun[i].dec))
+                .deg
+            )
             magnitude = -4.7 + 0.013 * phase_angle + 4.3e-7 * phase_angle**3
             return magnitude
 
@@ -213,16 +196,7 @@ class SolarSystemConstraint(ConstraintABC):
 
             # Get the body's position at the observation time
             try:
-                if hasattr(ephemeris, "_tle_ephem"):
-                    # Use rust-ephem's performant get_body if available
-                    self.computed_values.body_coordinates[body_name] = ephemeris._tle_ephem.get_body(
-                        _rust_ephem_body_name(body_name)
-                    )[i]
-                else:
-                    # Fallback to astropy's get_body
-                    self.computed_values.body_coordinates[body_name] = get_body(
-                        body_name, time[i], ephemeris.earth_location
-                    )
+                self.computed_values.body_coordinates[body_name] = ephemeris.get_body(body_name)[i]
             except (KeyError, ValueError) as e:
                 logging.warning(f"Could not get position for body {body_name}: {e}")
                 continue

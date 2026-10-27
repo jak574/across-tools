@@ -80,7 +80,7 @@ class TLEEphemeris(Ephemeris):
         rust_ephem.ensure_planetary_ephemeris()
 
         # Calculate ephemeris using rust-ephem library
-        self._tle_ephem = rust_ephem.TLEEphemeris(
+        self._rust_ephem = rust_ephem.TLEEphemeris(
             begin=self.begin.datetime,
             end=self.end.datetime,
             step_size=int(self._step_seconds),
@@ -89,41 +89,12 @@ class TLEEphemeris(Ephemeris):
         )
 
         # Calculate satellite position in ITRS coordinate system
-        self.earth_location = self._tle_ephem.itrs.earth_location
+        self.earth_location = self._rust_ephem.itrs.earth_location
 
         # Calculate satellite position in GCRS coordinate system vector as
         # array of x,y,z vectors in units of km, and velocity vector as array
         # of x,y,z vectors in units of km/s
-        self.gcrs = self._tle_ephem.gcrs
-
-    def _calc(self) -> None:
-        """
-        Calculate ephemeris data based on the coordinates computed by
-        prepare_data(). Overloads the base class method to as rust-ephem already
-        computes all necessary data during prepare_data().
-        """
-        # Calculate the position of the Moon relative to the spacecraft
-        self.moon = self._tle_ephem.moon
-
-        # Calculate the position of the Sun relative to the spacecraft
-        self.sun = self._tle_ephem.sun
-
-        # Calculate the position of the Earth relative to the spacecraft
-        self.earth = self._tle_ephem.earth
-
-        # Get the longitude, latitude, height, and distance (from center of
-        # Earth) of the satellite from the computed ephemeris.
-        self.latitude = self._tle_ephem.latitude
-        self.longitude = self._tle_ephem.longitude
-        self.height = self._tle_ephem.height
-        self.distance = self.gcrs.distance
-
-        # Calculate Earth's angular radius from observatory, capped at 90 degrees
-        self.earth_radius_angle = self._tle_ephem.earth_radius
-
-        # Similarly calculate the angular radii of the Sun and the Moon, capped at 90 degrees
-        self.moon_radius_angle = self._tle_ephem.moon_radius
-        self.sun_radius_angle = self._tle_ephem.sun_radius
+        self.gcrs = self._rust_ephem.gcrs
 
 
 def compute_tle_ephemeris(

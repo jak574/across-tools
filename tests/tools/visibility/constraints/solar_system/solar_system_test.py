@@ -7,11 +7,9 @@ from pydantic import ValidationError
 
 from across.tools.core.enums.solar_system_object import SolarSystemObject
 from across.tools.ephemeris import Ephemeris
+from across.tools.ephemeris.base import _rust_ephem_body_name
 from across.tools.visibility.constraints.earth_limb import EarthLimbConstraint
-from across.tools.visibility.constraints.solar_system import (
-    SolarSystemConstraint,
-    _rust_ephem_body_name,
-)
+from across.tools.visibility.constraints.solar_system import SolarSystemConstraint
 
 
 class TestSolarSystemConstraintAttributes:
@@ -274,10 +272,15 @@ class TestSolarSystemConstraintCall:
         mock_get_slice: None,
         caplog: pytest.LogCaptureFixture,
         mock_ephemeris: Ephemeris,
-        mock_get_body: None,
+        monkeypatch: pytest.MonkeyPatch,
         solar_system_constraint_single_body: SolarSystemConstraint,
     ) -> None:
         """Test that constraint logs warning when get_body fails and continues."""
+
+        def failing_get_body(body_name: str) -> SkyCoord:
+            raise ValueError("body not in kernel")
+
+        monkeypatch.setattr(mock_ephemeris, "get_body", failing_get_body)
 
         # Create time array
         time = Time(["2025-01-01"])
@@ -285,7 +288,8 @@ class TestSolarSystemConstraintCall:
 
         # Call, should not raise, log warning, and return False
         result = solar_system_constraint_single_body(time, mock_ephemeris, coord)
-        assert not result  # Should be False since body position failed
+        assert not result.any()  # Should be False since body position failed
+        assert "Could not get position for body" in caplog.text
 
 
 class TestCalculateBodyMagnitude:
@@ -503,11 +507,14 @@ class TestSolarSystemConstraintSeparation:
         mars = get_body("mars", ground_ephemeris.timestamp, ground_ephemeris.earth_location)
         expected = SkyCoord(mars.ra, mars.dec).separation(sky_coord)
 
+        # The ground ephemeris uses rust-ephem's DE440s kernel, whereas astropy
+        # defaults to its approximate "builtin" ephemeris, which differs by
+        # ~15 arcsec for Mars.
         assert constraint.computed_values.body_separation is not None
         assert u.allclose(
             constraint.computed_values.body_separation[SolarSystemObject.MARS],
             expected,
-            atol=1 * u.arcsec,
+            atol=30 * u.arcsec,
         )
 
     @pytest.mark.parametrize("body", list(SolarSystemObject))
