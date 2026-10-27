@@ -1,12 +1,19 @@
+from collections.abc import Callable
 from datetime import datetime
 from unittest.mock import patch
 
 import astropy.units as u  # type: ignore[import-untyped]  # type: ignore[import-untyped]
 import numpy as np
 import pytest
+import rust_ephem
 from astropy.coordinates import (  # type: ignore[import-untyped]
+    GCRS,
+    CartesianRepresentation,
+    EarthLocation,
     Latitude,
     Longitude,
+    SkyCoord,
+    get_body,
 )
 from astropy.table import Table  # type: ignore[import-untyped]
 from astropy.time import Time, TimeDelta  # type: ignore[import-untyped]
@@ -434,3 +441,129 @@ def ground_ephemeris(
     ephemeris = GroundEphemeris(begin, end, step_size, latitude, longitude, height)
     ephemeris.prepare_data()
     return ephemeris
+
+
+@pytest.fixture
+def body_position_tolerances() -> dict[str, uQuantity]:
+    """
+    Maximum allowed difference between ephemeris body positions and astropy's
+    apparent positions. astropy's default "builtin" planetary ephemeris is
+    approximate (~20 arcsec for Mars and Saturn), whereas rust-ephem uses JPL
+    DE440s, so the planet tolerances reflect the accuracy of astropy's
+    ephemeris. With astropy also using DE440s, all bodies agree to better
+    than 0.01 arcsec.
+    """
+    return {
+        "sun": 0.1 * u.arcsec,
+        "earth": 0.1 * u.arcsec,
+        "moon": 2 * u.arcsec,
+        "mercury": 1 * u.arcsec,
+        "venus": 3 * u.arcsec,
+        "mars": 25 * u.arcsec,
+        "jupiter": 3 * u.arcsec,
+        "saturn": 30 * u.arcsec,
+        "uranus": 10 * u.arcsec,
+        "neptune": 5 * u.arcsec,
+    }
+
+
+@pytest.fixture
+def body_position_factory() -> Callable[[Ephemeris, str], SkyCoord]:
+    """Return a body position from the ephemeris attributes, or from get_body for planets."""
+
+    def _build(ephemeris: Ephemeris, body: str) -> SkyCoord:
+        if body in ("sun", "moon", "earth"):
+            return getattr(ephemeris, body)
+        return ephemeris.get_body(body)
+
+    return _build
+
+
+@pytest.fixture
+def astropy_apparent_position_factory() -> Callable[[Ephemeris, str], SkyCoord]:
+    """
+    Return astropy's apparent position of a body as seen from the observatory,
+    including the aberration due to the observatory's full GCRS velocity.
+    Passing an EarthLocation to get_body only accounts for the velocity due to
+    Earth's rotation, which is not correct for a spacecraft.
+    """
+
+    def _build(ephemeris: Ephemeris, body: str) -> SkyCoord:
+        frame = GCRS(
+            obstime=ephemeris.timestamp,
+            obsgeoloc=ephemeris.gcrs.cartesian.without_differentials(),
+            obsgeovel=CartesianRepresentation(ephemeris.gcrs.velocity.d_xyz),
+        )
+        return get_body(body, ephemeris.timestamp, ephemeris.earth_location).transform_to(frame)
+
+    return _build
+
+
+@pytest.fixture
+def rust_ephem_factory() -> Callable[[Ephemeris], rust_ephem.Ephemeris]:
+    """Return the rust-ephem ephemeris underlying a rust-ephem based ephemeris."""
+
+    def _build(ephemeris: Ephemeris) -> rust_ephem.Ephemeris:
+        assert ephemeris._rust_ephem is not None
+        return ephemeris._rust_ephem
+
+    return _build
+
+
+@pytest.fixture
+def max_separation_factory() -> Callable[[SkyCoord, SkyCoord], uQuantity]:
+    """Return the maximum angular separation between two arrays of coordinates."""
+
+    def _build(coord1: SkyCoord, coord2: SkyCoord) -> uQuantity:
+        return SkyCoord(coord1.ra, coord1.dec).separation(SkyCoord(coord2.ra, coord2.dec)).max()
+
+    return _build
+
+
+@pytest.fixture
+def keck_mock_ephemeris(
+    mock_ephemeris: Ephemeris, keck_latitude: u.Quantity, keck_longitude: u.Quantity, keck_height: u.Quantity
+) -> Ephemeris:
+    """Fixture to provide a MockEphemeris, not based on rust-ephem, located at Keck."""
+    mock_ephemeris.earth_location = EarthLocation.from_geodetic(
+        lat=keck_latitude, lon=keck_longitude, height=keck_height
+    )
+    return mock_ephemeris
+
+
+@pytest.fixture
+def east_longitude_ground_ephemeris(
+    ephemeris_begin: Time,
+    ephemeris_end: Time,
+    ephemeris_step_size: TimeDelta,
+    keck_latitude: u.Quantity,
+    keck_height: u.Quantity,
+) -> Ephemeris:
+    """Fixture to provide a ground ephemeris with a longitude in the range 180-360 degrees."""
+    return compute_ground_ephemeris(
+        ephemeris_begin,
+        ephemeris_end,
+        ephemeris_step_size,
+        keck_latitude,
+        Longitude(241.8 * u.deg),
+        keck_height,
+    )
+
+
+@pytest.fixture
+def west_longitude_ground_ephemeris(
+    ephemeris_begin: Time,
+    ephemeris_end: Time,
+    ephemeris_step_size: TimeDelta,
+    keck_latitude: u.Quantity,
+    keck_height: u.Quantity,
+) -> Ephemeris:
+    """Fixture to provide a ground ephemeris at the same location as east_longitude_ground_ephemeris."""
+    return compute_ground_ephemeris(
+        ephemeris_begin,
+        ephemeris_end,
+        ephemeris_step_size,
+        keck_latitude,
+        Longitude(-118.2 * u.deg),
+        keck_height,
+    )

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 import astropy.units as u  # type: ignore[import-untyped]
+import rust_ephem
 from astropy.coordinates import (  # type: ignore[import-untyped]
     EarthLocation,
     Latitude,
@@ -91,8 +92,21 @@ class GroundEphemeris(Ephemeris):
             lat=self.latitude, lon=self.longitude, height=self.height
         )
 
+        # Ensure planetary ephemeris data is prepared
+        rust_ephem.ensure_planetary_ephemeris()
+
+        # Calculate ephemeris using rust-ephem library
+        self._rust_ephem = rust_ephem.GroundEphemeris(
+            latitude=self.earth_location.lat.to_value(u.deg),
+            longitude=self.earth_location.lon.wrap_at(180 * u.deg).to_value(u.deg),
+            height=self.earth_location.height.to_value(u.m),
+            begin=self.begin.datetime,
+            end=self.end.datetime,
+            step_size=int(self._step_seconds),
+        )
+
         # Calculate GCRS coordinates of the observatory
-        self.gcrs = self.earth_location.get_gcrs(self.timestamp)
+        self.gcrs = self._rust_ephem.gcrs
 
 
 def compute_ground_ephemeris(

@@ -1,6 +1,6 @@
 import astropy.units as u  # type: ignore[import-untyped]
 import numpy as np
-from astropy.coordinates import SkyCoord  # type: ignore[import-untyped]
+from astropy.coordinates import AltAz, SkyCoord, get_body  # type: ignore[import-untyped]
 
 from across.tools.core.enums import TwilightType
 from across.tools.ephemeris import Ephemeris, GroundEphemeris
@@ -345,3 +345,16 @@ class TestDaytimeConstraint:
         constraint = DaytimeConstraint(twilight_type=TwilightType.SUNSET)
         result = constraint(test_tle_ephemeris.timestamp, test_tle_ephemeris, dummy_coord)
         assert len(result) == len(test_tle_ephemeris.timestamp)
+
+    def test_daytime_constraint_ground_sun_altitude_matches_astropy(
+        self, ground_ephemeris: GroundEphemeris, dummy_coord: SkyCoord
+    ) -> None:
+        """Test that the ground-based Sun altitude matches astropy's apparent Sun altitude."""
+        constraint = DaytimeConstraint()
+        constraint(ground_ephemeris.timestamp, ground_ephemeris, dummy_coord)
+
+        altaz = AltAz(obstime=ground_ephemeris.timestamp, location=ground_ephemeris.earth_location)
+        expected = get_body("sun", ground_ephemeris.timestamp, ground_ephemeris.earth_location).transform_to(
+            altaz
+        )
+        assert u.allclose(constraint.computed_values.sun_altitude, expected.alt, atol=0.1 * u.arcsec)
