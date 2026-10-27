@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import astropy.units as u  # type: ignore[import-untyped]
 import numpy as np
 import pytest
@@ -527,3 +529,58 @@ class TestSolarSystemConstraintSeparation:
 
         assert constraint.computed_values.body_separation is not None
         assert body in constraint.computed_values.body_separation
+
+
+class TestSolarSystemConstraintMatchesAstropy:
+    """
+    Test that the values computed by SolarSystemConstraint match those
+    computed directly with astropy from the ephemeris body positions.
+    """
+
+    @pytest.mark.parametrize(
+        "body, magnitude_formula",
+        [
+            (SolarSystemObject.MERCURY, lambda phase: -1.9 + 0.02 * phase + 3.5e-7 * phase**3),
+            (SolarSystemObject.VENUS, lambda phase: -4.7 + 0.013 * phase + 4.3e-7 * phase**3),
+        ],
+    )
+    @pytest.mark.parametrize("ephemeris_fixture", ["ground_ephemeris", "test_tle_ephemeris"])
+    def test_phase_angle_magnitude_matches_full_separation(
+        self,
+        request: pytest.FixtureRequest,
+        ephemeris_fixture: str,
+        body: SolarSystemObject,
+        magnitude_formula: Callable[[np.typing.NDArray[np.float64]], np.typing.NDArray[np.float64]],
+    ) -> None:
+        """
+        The magnitude should match one computed from astropy's full separation
+        between the body and Sun GCRS coordinates.
+        """
+        ephemeris: Ephemeris = request.getfixturevalue(ephemeris_fixture)
+        constraint = SolarSystemConstraint(bodies=[body])
+        i = slice(0, len(ephemeris.timestamp))
+        body_coord = ephemeris.get_body(body)
+
+        magnitude = constraint._calculate_body_magnitude(body, body_coord, ephemeris, i)
+
+        expected = magnitude_formula(body_coord.separation(ephemeris.sun).deg)
+        assert np.allclose(magnitude, expected, rtol=0, atol=1e-9)
+
+    @pytest.mark.parametrize("body", list(SolarSystemObject))
+    @pytest.mark.parametrize("ephemeris_fixture", ["ground_ephemeris", "test_tle_ephemeris"])
+    def test_body_separation_matches_ephemeris_body(
+        self,
+        request: pytest.FixtureRequest,
+        ephemeris_fixture: str,
+        body: SolarSystemObject,
+        sky_coord: SkyCoord,
+    ) -> None:
+        """The recorded separation should match the separation from the ephemeris body position."""
+        ephemeris: Ephemeris = request.getfixturevalue(ephemeris_fixture)
+        constraint = SolarSystemConstraint(bodies=[body])
+        constraint(ephemeris.timestamp, ephemeris, sky_coord)
+
+        body_coord = ephemeris.get_body(body)
+        expected = SkyCoord(body_coord.ra, body_coord.dec).separation(sky_coord)
+        assert constraint.computed_values.body_separation is not None
+        assert u.allclose(constraint.computed_values.body_separation[body], expected, atol=1e-9 * u.deg)

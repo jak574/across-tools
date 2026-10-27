@@ -2,6 +2,7 @@ from collections.abc import Generator
 from unittest.mock import MagicMock
 
 import astropy.units as u  # type: ignore[import-untyped]
+import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord  # type: ignore[import-untyped]
 from astropy.time import Time  # type: ignore[import-untyped]
@@ -57,3 +58,18 @@ def mixed_bright_star_coords() -> SkyCoord:
 def mixed_bright_star_times() -> Time:
     """Timestamps aligned with mixed bright star coordinates."""
     return Time(["2024-01-01T00:00:00", "2024-01-01T01:00:00", "2024-01-01T02:00:00"])
+
+
+@pytest.fixture
+def sky_grid_coords(sirius_coord: SkyCoord) -> SkyCoord:
+    """A grid of coordinates across the sky, plus points at increasing distances from Sirius."""
+    ra, dec = np.meshgrid(np.arange(0, 360, 30), np.arange(-75, 90, 30))
+    grid = SkyCoord(ra=ra.ravel() * u.deg, dec=dec.ravel() * u.deg)
+    near_sirius = sirius_coord.directional_offset_by(0 * u.deg, [0.5, 2, 4.9, 5.1, 10, 25] * u.deg)
+    return SkyCoord([*grid, *near_sirius])
+
+
+@pytest.fixture
+def sky_grid_times(sky_grid_coords: SkyCoord) -> Time:
+    """Timestamps aligned with the sky grid coordinates."""
+    return Time("2024-01-01T00:00:00") + np.arange(len(sky_grid_coords)) * u.min

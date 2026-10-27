@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import astropy.units as u  # type: ignore[import-untyped]
+import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord  # type: ignore[import-untyped]
 from astropy.time import Time  # type: ignore[import-untyped]
@@ -185,3 +187,60 @@ class TestBrightStarConstraintCall:
         result = constraint(mixed_bright_star_times, ground_ephemeris, mixed_bright_star_coords)
 
         assert result[1]  # Second coordinate is at Sirius
+
+
+class TestBrightStarConstraintMatchesPerStarSeparation:
+    """
+    Test that the vectorized constraint gives the same result as checking the
+    separation from each bright star individually.
+    """
+
+    @staticmethod
+    def per_star_result(
+        coordinates: SkyCoord, stars: list[tuple[SkyCoord, float]], min_separation: float
+    ) -> np.typing.NDArray[np.bool_]:
+        """Check the separation of each coordinate from each star individually."""
+        return np.array(
+            [
+                any(coordinate.separation(star) < min_separation * u.deg for star, _ in stars)
+                for coordinate in coordinates
+            ]
+        )
+
+    @pytest.mark.parametrize("min_separation", [1.0, 5.0, 20.0, 60.0])
+    def test_coordinate_array_matches_per_star_separation(
+        self,
+        ground_ephemeris: Ephemeris,
+        mock_get_bright_stars: MagicMock,
+        mock_bright_stars: list[tuple[SkyCoord, float]],
+        sky_grid_coords: SkyCoord,
+        sky_grid_times: Time,
+        min_separation: float,
+    ) -> None:
+        """Results for an array of coordinates should match the per-star check."""
+        constraint = BrightStarConstraint(min_separation=min_separation)
+        result = constraint(sky_grid_times, ground_ephemeris, sky_grid_coords)
+
+        assert np.array_equal(
+            result, self.per_star_result(sky_grid_coords, mock_bright_stars, min_separation)
+        )
+
+    @pytest.mark.parametrize("min_separation", [1.0, 5.0, 20.0, 60.0])
+    def test_scalar_coordinates_match_per_star_separation(
+        self,
+        begin_time_array: Time,
+        ground_ephemeris: Ephemeris,
+        mock_get_bright_stars: MagicMock,
+        mock_bright_stars: list[tuple[SkyCoord, float]],
+        sky_grid_coords: SkyCoord,
+        min_separation: float,
+    ) -> None:
+        """Results for individual scalar coordinates should match the per-star check."""
+        constraint = BrightStarConstraint(min_separation=min_separation)
+        result = np.array(
+            [constraint(begin_time_array, ground_ephemeris, coordinate)[0] for coordinate in sky_grid_coords]
+        )
+
+        assert np.array_equal(
+            result, self.per_star_result(sky_grid_coords, mock_bright_stars, min_separation)
+        )
